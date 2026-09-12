@@ -1,0 +1,90 @@
+
+<!DOCTYPE html>
+<html lang="pt">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Dashboard VIP - Analista Bot</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #0b0e14; color: #e1e6ed; padding: 20px; }
+    .header { text-align: center; margin-bottom: 25px; border-bottom: 1px solid #1f293d; padding-bottom: 15px; }
+    .header h1 { color: #00ffcc; font-size: 1.8rem; text-transform: uppercase; letter-spacing: 1px; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 15px; margin-bottom: 25px; }
+    .card { background: #131a26; border: 1px solid #1f2d42; border-radius: 10px; padding: 18px; text-align: center; }
+    .card h3 { color: #8a99ad; font-size: 0.85rem; text-transform: uppercase; margin-bottom: 8px; }
+    .card .val { font-size: 1.6rem; font-weight: bold; color: #ffffff; }
+    .card .val.green { color: #00full; color: #00ff88; }
+    .card .val.loss { color: #ff3366; }
+    .card .val.highlight { color: #00e5ff; }
+    .status-container { background: #131a26; border: 1px solid #1f2d42; border-radius: 10px; padding: 20px; text-align: center; margin-bottom: 25px; }
+    #qrcode { margin-top: 15px; display: flex; justify-content: center; }
+    .history { background: #131a26; border: 1px solid #1f2d42; border-radius: 10px; padding: 15px; }
+    .history h3 { font-size: 0.9rem; color: #8a99ad; margin-bottom: 10px; }
+    .candles { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 10px; }
+    .candle { padding: 6px 12px; border-radius: 6px; font-weight: bold; font-size: 0.85rem; min-width: 55px; text-align: center; }
+    .c-blue { background: rgba(0, 153, 255, 0.2); color: #33a6ff; border: 1px solid #0099ff; }
+    .c-purple { background: rgba(155, 81, 224, 0.2); color: #a855f7; border: 1px solid #9b51e0; }
+    .c-pink { background: rgba(224, 81, 171, 0.2); color: #ec4899; border: 1px solid #e051ab; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h1>🚀 Monitoramento e Análise Técnica</h1>
+  </div>
+
+  <div class="status-container">
+    <div id="connection-status"><h3>🔄 Conectando ao Servidor...</h3></div>
+    <div id="qrcode"></div>
+  </div>
+
+  <div class="grid">
+    <div class="card"><h3>Última Vela</h3><div id="last-candle" class="val highlight">-</div></div>
+    <div class="card"><h3>Status Técnico</h3><div id="tech-status" class="val" style="font-size: 1.1rem;">-</div></div>
+    <div class="card"><h3>RSI (14)</h3><div id="rsi-val" class="val">-</div></div>
+    <div class="card"><h3>Placar VIP</h3><div class="val"><span id="greens" class="green">0</span> G / <span id="losses" class="loss">0</span> L</div></div>
+  </div>
+
+  <div class="history">
+    <h3>Últimas Velas Capturadas:</h3>
+    <div id="candles-list" class="candles"></div>
+  </div>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script>
+    const socket = io();
+
+    socket.on('qr', (data) => {
+      document.getElementById('connection-status').innerHTML = '<h3 style="color: #ffcc00;">📲 Escaneie o QR Code no WhatsApp:</h3>';
+      document.getElementById('qrcode').innerHTML = '<img src="' + data + '" width="250" height="250" style="border-radius:8px;"/>';
+    });
+
+    socket.on('conectado', () => {
+      document.getElementById('connection-status').innerHTML = '<h3 style="color: #00ff88;">✅ WhatsApp Conectado & Sistema em Operação</h3>';
+      document.getElementById('qrcode').innerHTML = '';
+    });
+
+    socket.on('telemetria', (data) => {
+      document.getElementById('last-candle').innerText = data.vela + 'x';
+      document.getElementById('tech-status').innerText = data.status;
+      document.getElementById('rsi-val').innerText = data.rsi || 'N/A';
+      document.getElementById('greens').innerText = data.greens;
+      document.getElementById('losses').innerText = data.losses;
+
+      if (data.historico) {
+        const list = document.getElementById('candles-list');
+        list.innerHTML = '';
+        data.historico.slice(0, 15).forEach(v => {
+          const div = document.createElement('div');
+          let cls = 'c-blue';
+          if (v >= 10.0) cls = 'c-pink';
+          else if (v >= 2.0) cls = 'c-purple';
+          div.className = 'candle ' + cls;
+          div.innerText = v + 'x';
+          list.appendChild(div);
+        });
+      }
+    });
+  </script>
+</body>
+</html>

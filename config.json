@@ -1,0 +1,10 @@
+{
+  "geminiApiKey": "ENV_VAR",
+  "useAI": true,
+  "modelGemini": "gemini-1.5-flash",
+  "promptSistema": "Você é o analista quantitativo chefe especialista na Teoria do Ciclo de 44 Velas do Aviator. Analise a distribuição de velas azuis (< 2.00x), roxas (2.00x - 9.99x) e rosas (>= 10.00x) nas últimas 44 rodadas.",
+  "urlJogo": "https://www.bantubet.co.ao/",
+  "grupoId": "120363425170460094@g.us",
+  "numeroTelefone": "244926757914",
+  "classeVelas": "*[class*='bubble'], *[class*='multiplier'], .payouts-block *, app-stats-widget *"
+}
