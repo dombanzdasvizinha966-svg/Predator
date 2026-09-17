@@ -16,7 +16,7 @@ const { GoogleGenerativeAI } = require("@google/generative-ai");
 // ============================================================================
 // CONFIGURAÇÕES E ESTADO GLOBAL
 // ============================================================================
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 10000;
 const CONFIG_FILE = path.join(__dirname, "config.json");
 
 let sock = null;
@@ -93,7 +93,7 @@ function loadConfig() {
   } catch (e) {}
 
   const defaultConfig = {
-    geminiApiKey: "SUA_CHAVE_GEMINI_AQUI",
+    geminiApiKey: "ENV_VAR",
     useAI: true,
     modelGemini: "gemini-1.5-flash",
     promptSistema: "Você é o analista quantitativo sênior do Robô Aviator AI VIP. Responda dúvidas sobre gestão e estratégias com extrema objetividade.",
@@ -109,8 +109,11 @@ function loadConfig() {
 
 let config = loadConfig();
 
-if (config.useAI && config.geminiApiKey && config.geminiApiKey !== "SUA_CHAVE_GEMINI_AQUI") {
-  geminiClient = new GoogleGenerativeAI(config.geminiApiKey);
+// Prioriza a chave da variável de ambiente no Render
+const apiKeyGemini = process.env.GEMINI_API_KEY || (config.geminiApiKey !== "ENV_VAR" ? config.geminiApiKey : null);
+
+if (config.useAI && apiKeyGemini) {
+  geminiClient = new GoogleGenerativeAI(apiKeyGemini);
   console.log("🦅 Módulo Gemini AI Sniper Conectado!");
 }
 
@@ -157,11 +160,26 @@ if (!fs.existsSync(htmlPath)) {
 
 const app = express();
 const server = http.createServer(app);
-io = new Server(server);
+io = new Server(server, {
+  cors: {
+    origin: "*",
+    methods: ["GET", "POST"]
+  }
+});
 
 io.on("connection", (socket) => {
+  console.log("📱 Nova conexão Socket.io recebida:", socket.id);
+  
   if (whatsappConectado) socket.emit("conectado");
   else if (lastQrDataUrl) socket.emit("qr", lastQrDataUrl);
+
+  // Emite o placar atual assim que o client conecta
+  socket.emit("placar", {
+    greensDirect: totalGreensDirect,
+    greensGale1: totalGreensGale1,
+    greensRosa: totalGreensRosa,
+    losses: totalLosses
+  });
 });
 
 app.use(express.static(publicDir));
@@ -171,7 +189,6 @@ app.get("/", (req, res) => res.sendFile(htmlPath));
 // LÓGICA DE ANÁLISE QUANTITATIVA & GEMINI AI
 // ============================================================================
 
-// 1. Filtro local ultra-rápido de oportunidade
 function validarZonaDeAposta(historico) {
   if (!historico || historico.length < 5) return { valida: false, modo: "PADRAO" };
 
@@ -179,7 +196,6 @@ function validarZonaDeAposta(historico) {
   const v2 = historico[1];
   const v3 = historico[2];
 
-  // Radar de Vela Rosa (10x+): 2 baixas extremas seguidas sem rosa recente nas últimas 15 rodadas
   const padraoRosa = (v1 < 1.30 && v2 < 1.30);
   const semRosaRecente = historico.slice(0, 15).every(v => v < 10.00);
 
@@ -187,7 +203,6 @@ function validarZonaDeAposta(historico) {
     return { valida: true, modo: "ROSA" };
   }
 
-  // Padrões para Alvo Padrão (2.00x): Quebra de ciclo frio ou gatilho roxo
   const padraoQuebra = (v2 < 1.80 && v3 < 1.80 && v1 >= 1.50);
   const padraoGatilhoRoxo = (v1 >= 2.00 && v2 < 1.50);
 
@@ -198,7 +213,6 @@ function validarZonaDeAposta(historico) {
   return { valida: false, modo: "PADRAO" };
 }
 
-// 2. Validação profunda via Gemini AI
 async function analisarComGeminiPro(historicoVelas, modoOperacao) {
   if (!geminiClient) return { recomendacao: "AGUARDAR", confianca: 0, motivo: "IA Indisponível" };
 
@@ -226,8 +240,7 @@ Responda APENAS em JSON estrito sem formatação adicional:
   const modelos = [
     config.modelGemini,
     "gemini-1.5-flash",
-    "gemini-2.0-flash",
-    "gemini-2.5-flash"
+    "gemini-2.0-flash"
   ].filter(Boolean);
 
   for (const modelName of modelos) {
@@ -292,7 +305,6 @@ async function initWhatsApp() {
       const remetente = msg.key.remoteJid;
       const cmd = texto.trim().toLowerCase();
 
-      // Comandos do Bot
       if (cmd === "!placar" || cmd === "/status" || cmd === "!status") {
         enviarRelatorioPlacar(remetente);
         return;
@@ -312,7 +324,6 @@ async function initWhatsApp() {
         return;
       }
 
-      // Chatbot com IA Gemini
       if (config.useAI && geminiClient && (remetente.endsWith("@s.whatsapp.net") || cmd.includes("bot"))) {
         const respostaIA = await responderDuvidaGemini(texto);
         if (respostaIA) {
@@ -394,7 +405,7 @@ function enviarGuiaGestao(destino) {
 }
 
 // ============================================================================
-// MONITORAMENTO PUPPETEER
+// MONITORAMENTO PUPPETEER (CONFIGURADO PARA LINUX / RENDER)
 // ============================================================================
 async function iniciarMonitoramentoAviator() {
   if (monitoramentoIniciado) return;
@@ -403,14 +414,17 @@ async function iniciarMonitoramentoAviator() {
   console.log("🌐 Conectando à mesa via Puppeteer...");
   try {
     const launchOptions = {
-      headless: false,
-      defaultViewport: null,
+      headless: "new", // OBRIGATÓRIO PARA RENDER / LINUX
+      executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || null,
       args: [
         '--no-sandbox',
         '--disable-setuid-sandbox',
-        '--disable-blink-features=AutomationControlled',
-        '--window-size=1366,768',
-        '--start-maximized'
+        '--disable-dev-shm-usage',
+        '--disable-accelerated-2d-canvas',
+        '--no-first-run',
+        '--no-zygote',
+        '--disable-gpu',
+        '--window-size=1366,768'
       ]
     };
 
@@ -491,6 +505,14 @@ function executarLoopMonitoramento() {
           if (rodadasBloqueadas > 0) rodadasBloqueadas--;
 
           console.log(`[VELA]: ${velaAtual}x | Analisando mesa...`);
+
+          // Transmite a nova vela para o Lovable em tempo real via Socket.io
+          if (io) {
+            io.emit("vela", {
+              multiplicador: velaAtual,
+              historico44: historico.slice(0, 44)
+            });
+          }
 
           if (whatsappConectado && sock) {
 
@@ -576,6 +598,13 @@ ${placar}`;
               enviarWhatsAppFila(config.grupoId, { text: msg });
 
               if (finalizado) {
+                if (io) {
+                  io.emit("resultado", {
+                    sucesso: velaAtual >= multiplicadorProtecao,
+                    velaPaga: velaAtual,
+                    placar: { greensDirect: totalGreensDirect, greensGale1: totalGreensGale1, greensRosa: totalGreensRosa, losses: totalLosses }
+                  });
+                }
                 sinalAtivo = null;
                 tentativaAtual = 0;
               }
@@ -617,6 +646,18 @@ ${iconeHeader} ═════════════════════ $
 ${obterLinkDinamico()}`;
 
                   enviarWhatsAppFila(config.grupoId, { text: textoSinal });
+
+                  // Transmite o sinal para o app Lovable via Socket.io
+                  if (io) {
+                    io.emit("sinal", {
+                      alvo: multiplicadorAlvo,
+                      protecao: multiplicadorProtecao,
+                      confianca: analise.confianca,
+                      motivo: analise.motivo,
+                      modo: tipoSinal,
+                      entrarApos: velaAtual
+                    });
+                  }
                 }
               }
             }
@@ -641,6 +682,6 @@ ${obterLinkDinamico()}`;
 // INICIALIZAÇÃO DO SERVIDOR
 // ============================================================================
 server.listen(PORT, () => {
-  console.log(`🚀 Servidor HTTP ativo em http://localhost:${PORT}`);
+  console.log(`🚀 Servidor HTTP ativo na porta ${PORT}`);
   initWhatsApp();
 });
