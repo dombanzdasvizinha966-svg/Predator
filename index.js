@@ -173,7 +173,6 @@ io.on("connection", (socket) => {
   if (whatsappConectado) socket.emit("conectado");
   else if (lastQrDataUrl) socket.emit("qr", lastQrDataUrl);
 
-  // Emite o placar atual assim que o client conecta
   socket.emit("placar", {
     greensDirect: totalGreensDirect,
     greensGale1: totalGreensGale1,
@@ -405,7 +404,7 @@ function enviarGuiaGestao(destino) {
 }
 
 // ============================================================================
-// MONITORAMENTO PUPPETEER (CONFIGURADO PARA LINUX / RENDER)
+// MONITORAMENTO PUPPETEER (CONFIGURADO PARA AMBIENTES HEADLESS / RENDER)
 // ============================================================================
 async function iniciarMonitoramentoAviator() {
   if (monitoramentoIniciado) return;
@@ -414,7 +413,7 @@ async function iniciarMonitoramentoAviator() {
   console.log("🌐 Conectando à mesa via Puppeteer...");
   try {
     const launchOptions = {
-      headless: "new", // OBRIGATÓRIO PARA RENDER / LINUX
+      headless: true, // Headless estrito ativado para evitar dependência do X Server
       executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || null,
       args: [
         '--no-sandbox',
@@ -423,6 +422,7 @@ async function iniciarMonitoramentoAviator() {
         '--disable-accelerated-2d-canvas',
         '--no-first-run',
         '--no-zygote',
+        '--single-process',
         '--disable-gpu',
         '--window-size=1366,768'
       ]
@@ -506,7 +506,6 @@ function executarLoopMonitoramento() {
 
           console.log(`[VELA]: ${velaAtual}x | Analisando mesa...`);
 
-          // Transmite a nova vela para o Lovable em tempo real via Socket.io
           if (io) {
             io.emit("vela", {
               multiplicador: velaAtual,
@@ -647,7 +646,6 @@ ${obterLinkDinamico()}`;
 
                   enviarWhatsAppFila(config.grupoId, { text: textoSinal });
 
-                  // Transmite o sinal para o app Lovable via Socket.io
                   if (io) {
                     io.emit("sinal", {
                       alvo: multiplicadorAlvo,
