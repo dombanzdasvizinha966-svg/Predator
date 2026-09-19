@@ -69,7 +69,6 @@ const publicDir = path.join(__dirname, "public");
 if (!fs.existsSync(publicDir)) fs.mkdirSync(publicDir);
 
 const htmlPath = path.join(publicDir, "index.html");
-// HTML atualizado com layout responsivo, status dinâmico e botão de limpeza rápida de sessão
 fs.writeFileSync(htmlPath, `
   <!DOCTYPE html>
   <html lang="pt">
@@ -126,12 +125,16 @@ fs.writeFileSync(htmlPath, `
 
 const app = express();
 const server = http.createServer(app);
-io = new Server(server);
+io = new Server(server, {
+  cors: {
+    origin: "*", // Permite conexões do seu frontend no Lovable
+    methods: ["GET", "POST"]
+  }
+});
 
 app.use(express.static(publicDir));
 app.get("/", (req, res) => res.sendFile(htmlPath));
 
-// API para reiniciar/limpar sessão e forçar novo QR Code pelo navegador
 app.post("/api/whatsapp/restart", async (req, res) => {
   try {
     if (sock) {
@@ -160,10 +163,6 @@ app.post("/api/whatsapp/restart", async (req, res) => {
     res.json({ ok: false, erro: e.message });
   }
 });
-
-// ==========================================
-// 🔍 EXTRATOR E ANALISADOR REAL DE HASH PROVABLY FAIR
-// ==========================================
 
 async function extrairDadosProvablyFairReal(pagina) {
   try {
@@ -311,30 +310,26 @@ async function iniciarMonitoramentoAviator() {
   if (monitoramentoIniciado) return;
   monitoramentoIniciado = true;
 
-  console.log("🌐 Iniciando navegador no ambiente cloud (Render)...");
+  console.log("🌐 Iniciando navegador no Windows (Local)...");
   try {
     if (navegadorJogo) {
       try { await navegadorJogo.close(); } catch(e) {}
       navegadorJogo = null;
     }
 
-    // Inicialização otimizada para nuvem sem dependência de apt-get
+    // Configuração para abrir o Chrome visível no seu computador local (Bypass total BantuBet)
     navegadorJogo = await puppeteer.launch({ 
-      headless: true, // Obrigatório em servidores em nuvem (sem ecrã físico)
+      headless: false, 
       args: [
         '--no-sandbox', 
         '--disable-setuid-sandbox', 
-        '--disable-dev-shm-usage',
-        '--disable-accelerated-2d-canvas',
-        '--no-first-run',
-        '--no-zygote',
-        '--single-process',
-        '--disable-gpu',
         '--disable-blink-features=AutomationControlled'
       ]
     });
     
     paginaJogo = await navegadorJogo.newPage();
+    await paginaJogo.setViewport({ width: 1280, height: 800 });
+    
     await paginaJogo.evaluateOnNewDocument(() => { 
       Object.defineProperty(navigator, 'webdriver', { get: () => undefined }); 
     }); 
@@ -343,11 +338,12 @@ async function iniciarMonitoramentoAviator() {
     executarLoopMonitoramento();
     
   } catch (err) {
-    console.log("❌ Erro ao abrir navegador na nuvem:", err.message);
+    console.log("❌ Erro ao abrir navegador local:", err.message);
     monitoramentoIniciado = false;
     setTimeout(() => iniciarMonitoramentoAviator(), 15000);
   }
 }
+
 function executarLoopMonitoramento() {
   let contadorErros = 0;
   console.log("⚙️ Analisador Real Provably Fair Operando em Tempo Real...");
@@ -377,6 +373,17 @@ function executarLoopMonitoramento() {
           ultimaVelaRegistrada = velaAtual;
 
           const analiseReal = analisarPadraoRealPF(dadosExtraidos);
+
+          // 🟢 TRANSMITE OS DADOS REAIS EM TEMPO REAL PARA O LOVABLE VIA SOCKET.IO
+          if (io) {
+            io.emit("dados-mercado", {
+              velaRecente: velaAtual,
+              historico: dadosExtraidos.velas.slice(0, 10),
+              statusAnalise: analiseReal.sinal ? analiseReal.tipo : "AGUARDANDO GATILHO DE HASH",
+              alvoSugerido: analiseReal.sinal ? analiseReal.alvo : 1.70,
+              sinalAtivo: sinalAtivo !== null
+            });
+          }
 
           console.clear();
           console.log(`==========================================================================`);
