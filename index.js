@@ -318,14 +318,15 @@ async function iniciarMonitoramentoAviator() {
     }
 
     // Configuração para abrir o Chrome visível no seu computador local (Bypass total BantuBet)
-    navegadorJogo = await puppeteer.launch({ 
-      headless: false, 
-      args: [
-        '--no-sandbox', 
-        '--disable-setuid-sandbox', 
-        '--disable-blink-features=AutomationControlled'
-      ]
-    });
+   navegadorJogo = await puppeteer.launch({ 
+  headless: false, // <-- Mude para false para abrir o Chrome no seu PC
+  executablePath: 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe', // Caminho do Chrome no Windows
+  args: [
+    '--no-sandbox', 
+    '--disable-setuid-sandbox', 
+    '--disable-blink-features=AutomationControlled'
+  ]
+});
     
     paginaJogo = await navegadorJogo.newPage();
     await paginaJogo.setViewport({ width: 1280, height: 800 });
