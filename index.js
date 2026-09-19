@@ -4,81 +4,37 @@ const { Server } = require("socket.io");
 const path = require("path");
 const fs = require("fs");
 const QRCode = require("qrcode");
-
-const puppeteer = require("puppeteer-extra");
-const StealthPlugin = require("puppeteer-extra-plugin-stealth");
-puppeteer.use(StealthPlugin());
-
+const puppeteer = require("puppeteer");
+const crypto = require("crypto");
 const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, Browsers } = require("@whiskeysockets/baileys");
 const pino = require("pino");
-const { GoogleGenerativeAI } = require("@google/generative-ai");
 
-// ============================================================================
-// CONFIGURAÇÕES E ESTADO GLOBAL
-// ============================================================================
-const PORT = process.env.PORT || 3000;
+const PORT = 3000;
 const CONFIG_FILE = path.join(__dirname, "config.json");
 
 let sock = null;
 let whatsappConectado = false;
 let io = null;
-let lastQrDataUrl = null;
 let ultimaVelaRegistrada = null;
 let navegadorJogo = null;
 let paginaJogo = null;
 let monitoramentoIniciado = false;
 
-let geminiClient = null;
-
-// Gestão de Sinais
-let sinalAtivo = null; 
-let tipoSinal = "PADRAO"; // "PADRAO" (2.00x) ou "ROSA" (10.00x+)
+let historicoOperacoes = { wins: 0, losses: 0, total: 0 };
+let sinalAtivo = null;
 let tentativaAtual = 0;
 let multiplicadorAlvo = 2.00;
-let multiplicadorProtecao = 1.50;
-let rodadasBloqueadas = 0;
-
-// Placar Quantitativo
-let totalGreensDirect = 0;
-let totalGreensGale1 = 0;
-let totalGreensRosa = 0;
+let totalGreens = 0;
 let totalLosses = 0;
-const ENTRADA_PADRAO_KZ = 500;
+const ENTRADA_PADRAO_KZ = 500; 
 
-// Fila Anti-Bloqueio WhatsApp (Baileys)
-const filaMensagens = [];
-let enviandoMensagem = false;
-
-async function processarFilaEnvio() {
-  if (enviandoMensagem || filaMensagens.length === 0 || !sock || !whatsappConectado) return;
-  enviandoMensagem = true;
-
-  const { destino, conteudo } = filaMensagens.shift();
-  try {
-    await sock.sendMessage(destino, conteudo);
-  } catch (err) {
-    console.error("⚠️ Erro no envio da mensagem WhatsApp:", err.message);
-  }
-
-  setTimeout(() => {
-    enviandoMensagem = false;
-    processarFilaEnvio();
-  }, 1000);
-}
-
-function enviarWhatsAppFila(destino, conteudo) {
-  filaMensagens.push({ destino, conteudo });
-  processarFilaEnvio();
-}
-
-// Links Rotativos de Afiliado
 const LINKS_ROTATIVOS = [
   "https://www.bantubet.co.ao/?aff=PROMOTOR_A",
   "https://www.bantubet.co.ao/?aff=PROMOTOR_B"
 ];
 let indexLink = 0;
 
-function obterLinkDinamico() {
+function obterLinkDinamento() {
   const link = LINKS_ROTATIVOS[indexLink];
   indexLink = (indexLink + 1) % LINKS_ROTATIVOS.length;
   return link;
@@ -90,556 +46,395 @@ function loadConfig() {
       delete require.cache[require.resolve(CONFIG_FILE)];
       return JSON.parse(fs.readFileSync(CONFIG_FILE, "utf8"));
     }
-  } catch (e) {}
-
+  } catch (e) {
+    console.error("Erro ao ler config.json, carregando padrão.", e);
+  }
+  
   const defaultConfig = {
-    geminiApiKey: "SUA_CHAVE_GEMINI_AQUI",
-    useAI: true,
-    modelGemini: "gemini-1.5-flash",
-    promptSistema: "Você é o analista quantitativo sênior do Robô Aviator AI VIP. Responda dúvidas sobre gestão e estratégias com extrema objetividade.",
-    urlJogo: "https://www.bantubet.co.ao/",
-    grupoId: "120363425170460094@g.us",
-    numeroTelefone: "244926757914",
-    classeVelas: "*[class*='bubble'], *[class*='multiplier'], .payouts-block *, app-stats-widget *"
+    "groqApiKey": "",
+    "useAI": true,
+    "model": "llama-3.1-8b-instant",
+    "promptSistema": "Você é o assistente do Robô Aviator VIP...",
+    "urlJogo": "https://www.bantubet.co.ao/",
+    "grupoId": "120363425170460094@g.us",
+    "classeVelas": "div.stats-list app-stats-item, app-stats-widget div.bubble-multiplier, .payouts-block div, div.bubble-multiplier, .multiplier, div[class*='bubble']"
   };
-
   fs.writeFileSync(CONFIG_FILE, JSON.stringify(defaultConfig, null, 2), "utf8");
   return defaultConfig;
 }
 
 let config = loadConfig();
 
-if (config.useAI && config.geminiApiKey && config.geminiApiKey !== "SUA_CHAVE_GEMINI_AQUI") {
-  geminiClient = new GoogleGenerativeAI(config.geminiApiKey);
-  console.log("🦅 Módulo Gemini AI Sniper Conectado!");
-}
-
-// ============================================================================
-// PAINEL WEB & SERVIDOR HTTP
-// ============================================================================
 const publicDir = path.join(__dirname, "public");
 if (!fs.existsSync(publicDir)) fs.mkdirSync(publicDir);
 
 const htmlPath = path.join(publicDir, "index.html");
-if (!fs.existsSync(htmlPath)) {
-  fs.writeFileSync(htmlPath, `
-    <!DOCTYPE html>
-    <html lang="pt">
-    <head>
+// HTML atualizado com layout responsivo, status dinâmico e botão de limpeza rápida de sessão
+fs.writeFileSync(htmlPath, `
+  <!DOCTYPE html>
+  <html lang="pt">
+  <head>
       <meta charset="UTF-8">
-      <title>Painel Robô Aviator AI Ultra Sniper</title>
+      <title>Quantum Panel - Live QR</title>
       <style>
-        body { font-family: monospace; background: #080a0f; color: #00ff66; text-align: center; padding-top: 40px; }
-        .box { background: #0f141d; display: inline-block; padding: 30px; border-radius: 12px; border: 1px solid #00ff66; box-shadow: 0 0 15px rgba(0,255,102,0.2); }
-        h1 { margin-bottom: 20px; }
-        img { border: 2px solid #00ff66; border-radius: 8px; }
+          body { font-family: sans-serif; text-align: center; padding-top: 40px; background: #111; color: #fff; }
+          #qrcode { background: #fff; display: inline-block; padding: 20px; border-radius: 10px; margin-top: 20px; min-height: 250px; min-width: 250px; }
+          h3 { color: #333; margin-top: 0; }
+          .btn { background: #007bff; color: #fff; border: none; padding: 12px 24px; border-radius: 6px; font-size: 16px; cursor: pointer; margin-top: 20px; font-weight: bold; }
+          .btn:hover { background: #0056b3; }
+          #status-text { font-size: 18px; margin-top: 10px; color: #ffc107; font-weight: bold; }
       </style>
-    </head>
-    <body>
-      <div class="box">
-        <h1>🦅 Robô Aviator AI Ultra Sniper (HFT)</h1>
-        <div id="qrcode"><h3>Aguardando conexão...</h3></div>
-      </div>
+  </head>
+  <body>
+      <h1>🤖 Provably Fair Real Analyzer - Monitor</h1>
+      <div id="status-text">Aguardando conexão com o WhatsApp...</div>
+      <div id="qrcode"><h3>Gerando QR Code...</h3></div>
+      <br>
+      <button class="btn" onclick="reiniciarWhatsApp()">🔄 Limpar Sessão e Gerar Novo QR</button>
+
       <script src="/socket.io/socket.io.js"></script>
       <script>
-        const socket = io();
-        socket.on('qr', (data) => {
-          document.getElementById('qrcode').innerHTML = '<img src="' + data + '" width="300" height="300"/>';
-        });
-        socket.on('conectado', () => {
-          document.getElementById('qrcode').innerHTML = '<h2 style="color: #00ff66;">✅ WhatsApp Conectado & Operando!</h2>';
-        });
+          const socket = io();
+
+          socket.on('status', (data) => {
+              document.getElementById('status-text').innerText = data.mensagem;
+              if (data.conectado) {
+                  document.getElementById('qrcode').innerHTML = '<h3 style="color: #28a745;">✅ Conectado com Sucesso!</h3>';
+              }
+          });
+
+          socket.on('qr', (data) => {
+              const qrDiv = document.getElementById('qrcode');
+              if (data === 'loading') {
+                  qrDiv.innerHTML = '<h3>Carregando QR Code...</h3>';
+              } else if (data) {
+                  qrDiv.innerHTML = '<img src="' + data + '" width="280" alt="QR Code WhatsApp"/>';
+              }
+          });
+
+          function reiniciarWhatsApp() {
+              if(confirm("Deseja limpar a sessão anterior e gerar um novo QR Code?")) {
+                  fetch('/api/whatsapp/restart?limpar=1', { method: 'POST' })
+                      .then(res => res.json())
+                      .then(data => alert('Reiniciando conexão do WhatsApp... Aguarde alguns segundos.'));
+              }
+          }
       </script>
-    </body>
-    </html>
-  `);
-}
+  </body>
+  </html>
+`);
 
 const app = express();
 const server = http.createServer(app);
 io = new Server(server);
 
-io.on("connection", (socket) => {
-  if (whatsappConectado) socket.emit("conectado");
-  else if (lastQrDataUrl) socket.emit("qr", lastQrDataUrl);
-});
-
 app.use(express.static(publicDir));
 app.get("/", (req, res) => res.sendFile(htmlPath));
 
-// ============================================================================
-// LÓGICA DE ANÁLISE QUANTITATIVA & GEMINI AI
-// ============================================================================
-
-// 1. Filtro local ultra-rápido de oportunidade
-function validarZonaDeAposta(historico) {
-  if (!historico || historico.length < 5) return { valida: false, modo: "PADRAO" };
-
-  const v1 = historico[0]; 
-  const v2 = historico[1];
-  const v3 = historico[2];
-
-  // Radar de Vela Rosa (10x+): 2 baixas extremas seguidas sem rosa recente nas últimas 15 rodadas
-  const padraoRosa = (v1 < 1.30 && v2 < 1.30);
-  const semRosaRecente = historico.slice(0, 15).every(v => v < 10.00);
-
-  if (padraoRosa && semRosaRecente) {
-    return { valida: true, modo: "ROSA" };
-  }
-
-  // Padrões para Alvo Padrão (2.00x): Quebra de ciclo frio ou gatilho roxo
-  const padraoQuebra = (v2 < 1.80 && v3 < 1.80 && v1 >= 1.50);
-  const padraoGatilhoRoxo = (v1 >= 2.00 && v2 < 1.50);
-
-  if (padraoQuebra || padraoGatilhoRoxo) {
-    return { valida: true, modo: "PADRAO" };
-  }
-
-  return { valida: false, modo: "PADRAO" };
-}
-
-// 2. Validação profunda via Gemini AI
-async function analisarComGeminiPro(historicoVelas, modoOperacao) {
-  if (!geminiClient) return { recomendacao: "AGUARDAR", confianca: 0, motivo: "IA Indisponível" };
-
-  const ultimas30 = historicoVelas.slice(0, 30).join(", ");
-
-  const prompt = `
-[SYSTEM: HIGH FREQUENCY QUANT ENGINE]
-Histórico das últimas 30 velas (recente -> antigo): [${ultimas30}]
-Modo de Operação Solicitado: ${modoOperacao}
-
-Se modo for ROSA: Avalie se há tendência clara para busca de vela >= 10.00x.
-Se modo foi PADRAO: Avalie entrada com Target em 2.00x e Proteção em 1.50x.
-
-Responda APENAS em JSON estrito sem formatação adicional:
-{
-  "recomendacao": "ENTRAR" ou "AGUARDAR",
-  "confianca": 85,
-  "alvo": 2.00,
-  "protecao": 1.50,
-  "padrao_detectado": "NOME_DO_PADRAO",
-  "motivo": "Explicacao curta de ate 8 palavras"
-}
-`;
-
-  const modelos = [
-    config.modelGemini,
-    "gemini-1.5-flash",
-    "gemini-2.0-flash",
-    "gemini-2.5-flash"
-  ].filter(Boolean);
-
-  for (const modelName of modelos) {
-    try {
-      const model = geminiClient.getGenerativeModel({ model: modelName });
-      const result = await model.generateContent(prompt);
-      const text = result.response.text().trim();
-      const match = text.match(/\{[\s\S]*\}/);
-      if (match) return JSON.parse(match[0]);
-    } catch (e) {
-      continue;
+// API para reiniciar/limpar sessão e forçar novo QR Code pelo navegador
+app.post("/api/whatsapp/restart", async (req, res) => {
+  try {
+    if (sock) {
+      try { await sock.end(); } catch (e) {}
+      sock = null;
     }
-  }
+    whatsappConectado = false;
 
-  return { recomendacao: "AGUARDAR", confianca: 0, motivo: "Falha na resposta da IA" };
-}
-
-async function responderDuvidaGemini(pergunta) {
-  if (!geminiClient) return null;
-
-  const modelos = [
-    config.modelGemini,
-    "gemini-1.5-flash",
-    "gemini-2.0-flash"
-  ].filter(Boolean);
-
-  const prompt = `${config.promptSistema}\n\nUsuário perguntou: "${pergunta}". Responda em no máximo 2 frases.`;
-
-  for (const modelName of modelos) {
-    try {
-      const model = geminiClient.getGenerativeModel({ model: modelName });
-      const result = await model.generateContent(prompt);
-      return result.response.text();
-    } catch (e) {
-      continue;
-    }
-  }
-  return null;
-}
-
-// ============================================================================
-// BAILEYS / WHATSAPP & COMANDOS
-// ============================================================================
-async function initWhatsApp() {
-  const { state, saveCreds } = await useMultiFileAuthState(path.join(__dirname, "auth_baileys"));
-
-  sock = makeWASocket({
-    auth: state,
-    logger: pino({ level: "silent" }),
-    printQRInTerminal: true,
-    browser: Browsers.ubuntu("Chrome"),
-    generateHighQualityLinkPreview: false,
-    syncFullHistory: false
-  });
-
-  sock.ev.on("creds.update", saveCreds);
-
-  sock.ev.on("messages.upsert", async (m) => {
-    const msg = m.messages[0];
-    if (msg && msg.message && !msg.key.fromMe) {
-      const texto = msg.message.conversation || msg.message.extendedTextMessage?.text || "";
-      const remetente = msg.key.remoteJid;
-      const cmd = texto.trim().toLowerCase();
-
-      // Comandos do Bot
-      if (cmd === "!placar" || cmd === "/status" || cmd === "!status") {
-        enviarRelatorioPlacar(remetente);
-        return;
-      }
-
-      if (cmd === "!gestao" || cmd === "!ajuda") {
-        enviarGuiaGestao(remetente);
-        return;
-      }
-
-      if (cmd === "!reset" && (msg.key.fromMe || remetente.includes(config.numeroTelefone))) {
-        totalGreensDirect = 0;
-        totalGreensGale1 = 0;
-        totalGreensRosa = 0;
-        totalLosses = 0;
-        enviarWhatsAppFila(remetente, { text: "🔄 *Placar e estatísticas zerados com sucesso!*" });
-        return;
-      }
-
-      // Chatbot com IA Gemini
-      if (config.useAI && geminiClient && (remetente.endsWith("@s.whatsapp.net") || cmd.includes("bot"))) {
-        const respostaIA = await responderDuvidaGemini(texto);
-        if (respostaIA) {
-          enviarWhatsAppFila(remetente, { text: respostaIA });
+    if (req.query.limpar === "1") {
+      const authPath = path.join(__dirname, "auth_baileys");
+      if (fs.existsSync(authPath)) {
+        try {
+          fs.rmSync(authPath, { recursive: true, force: true });
+          console.log("🧹 Pasta auth_baileys limpa com sucesso.");
+        } catch (e) {
+          console.error("Erro ao limpar pasta de autenticação:", e);
         }
       }
     }
+
+    io.emit("qr", "loading");
+    io.emit("status", { conectado: false, mensagem: "Gerando novo QR Code..." });
+    initWhatsApp();
+    res.json({ ok: true });
+  } catch (e) {
+    res.json({ ok: false, erro: e.message });
+  }
+});
+
+// ==========================================
+// 🔍 EXTRATOR E ANALISADOR REAL DE HASH PROVABLY FAIR
+// ==========================================
+
+async function extrairDadosProvablyFairReal(pagina) {
+  try {
+    return await pagina.evaluate(() => {
+      let historicoVelas = [];
+      const tags = document.querySelectorAll('app-bubble-multiplier, .bubble-multiplier, app-stats-item, .payouts-block div, [class*="bubble"]');
+      
+      if (tags.length > 0) {
+        tags.forEach(t => {
+          const txt = (t.innerText || t.textContent || "").trim().toLowerCase();
+          if (txt.endsWith('x')) {
+            let num = parseFloat(txt.replace('x', '').replace(',', '.'));
+            if (!isNaN(num)) historicoVelas.push(num);
+          }
+        });
+      }
+
+      if (historicoVelas.length === 0) {
+        const textoBody = document.body.innerText || "";
+        const matches = textoBody.match(/\d+[.,]\d+x/g);
+        if (matches) {
+          matches.forEach(m => {
+            let num = parseFloat(m.replace('x', '').replace(',', '.'));
+            if (!isNaN(num) && num < 10000) historicoVelas.push(num);
+          });
+        }
+      }
+
+      let hashesRecentes = [];
+      const elementosHash = document.querySelectorAll('[class*="hash"], [class*="fair"], [class*="seed"]');
+      elementosHash.forEach(el => {
+        const text = el.innerText || "";
+        if (text.length >= 10) hashesRecentes.push(text);
+      });
+
+      return {
+        velas: historicoVelas.slice(0, 30),
+        hashes: hashesRecentes.slice(0, 5)
+      };
+    });
+  } catch (e) {
+    return { velas: [], hashes: [] };
+  }
+}
+
+function analisarPadraoRealPF(dados) {
+  const historico = dados.velas;
+  if (historico.length < 15) return { sinal: false, motivo: "DADOS_INSUFICIENTES" };
+
+  const ultimas15 = historico.slice(0, 15);
+  let abaixoDeDois = ultimas15.filter(v => v < 2.00).length;
+  let proporcaoBaixas = abaixoDeDois / ultimas15.length;
+  let cicloCompensacao = proporcaoBaixas >= 0.70 && ultimas15[0] < 1.30;
+  
+  let alvoCalculado = 1.70;
+  if (cicloCompensacao) {
+    let pagadoras = ultimas15.filter(v => v >= 2.00);
+    if (pagadoras.length > 0) {
+      let mediaPagadoras = pagadoras.reduce((a, b) => a + b, 0) / pagadoras.length;
+      alvoCalculado = Math.min(Math.max(mediaPagadoras * 0.65, 1.50), 2.05);
+    }
+    return {
+      sinal: true,
+      tipo: "COMPENSAÇÃO_REAL_PF",
+      alvo: parseFloat(alvoCalculado.toFixed(2)),
+      descricao: `Alta concentração de ciclos baixos (${(proporcaoBaixas*100).toFixed(0)}%). O algoritmo real aponta quebra de entropia.`
+    };
+  }
+
+  return { sinal: false, motivo: "ENTROPIA_ESTAVEL" };
+}
+
+async function initWhatsApp() {
+  console.log("📂 Carregando credenciais do WhatsApp...");
+  const { state, saveCreds } = await useMultiFileAuthState(path.join(__dirname, "auth_baileys"));
+  
+  sock = makeWASocket({
+    auth: state,
+    logger: pino({ level: "fatal" }), 
+    printQRInTerminal: false, 
+    browser: Browsers.ubuntu("Chrome"),
+    markOnlineOnConnect: true
+  });
+  
+  sock.ev.on("creds.update", saveCreds);
+
+  sock.ev.on('messages.upsert', async (m) => {
+    try {
+      const msg = m.messages[0];
+      if (!msg.message || msg.key.fromMe) return;
+      const texto = msg.message.conversation || msg.message.extendedTextMessage?.text || "";
+      if (texto.trim() === "!placar") enviarRelatorioPlacar();
+    } catch (e) {}
   });
 
   sock.ev.on("connection.update", async (update) => {
-    const { connection, lastDisconnect, qr } = update;
-
+    const { connection, qr, lastDisconnect } = update;
+    
     if (qr) {
       try {
-        lastQrDataUrl = await QRCode.toDataURL(qr, { width: 300 });
-        io.emit("qr", lastQrDataUrl);
-      } catch (e) {}
+        const qrDataUrl = await QRCode.toDataURL(qr, { width: 300 });
+        if (io) {
+          io.emit("qr", qrDataUrl);
+          io.emit("status", { conectado: false, mensagem: "Escaneie o QR Code no navegador!" });
+          console.log("📱 QR Code gerado com sucesso! Acesse http://localhost:3000");
+        }
+      } catch (e) {
+        console.error("Erro ao gerar QR Code:", e);
+      }
     }
-
+    
     if (connection === "close") {
-      const razao = lastDisconnect?.error?.output?.statusCode;
       whatsappConectado = false;
-      lastQrDataUrl = null;
-      if (razao !== DisconnectReason.loggedOut) {
-        setTimeout(initWhatsApp, 3000);
-      }
+      if (io) io.emit("status", { conectado: false, mensagem: "WhatsApp desconectado. Tentando reconectar..." });
+      const deveReiniciar = lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
+      if (deveReiniciar) setTimeout(() => initWhatsApp(), 5000);
     } else if (connection === "open") {
-      if (!whatsappConectado) {
-        whatsappConectado = true;
-        lastQrDataUrl = null;
-        console.log("✅ WhatsApp Conectado com Sucesso!");
-        io.emit("conectado");
-        await iniciarMonitoramentoAviator();
+      whatsappConectado = true;
+      console.log("✅ WhatsApp Conectado com Sucesso!");
+      if (io) {
+        io.emit("qr", null);
+        io.emit("status", { conectado: true, mensagem: "WhatsApp conectado com sucesso!" });
       }
+      if (!monitoramentoIniciado) await iniciarMonitoramentoAviator();
     }
   });
 }
 
-function enviarRelatorioPlacar(destino = config.grupoId) {
+async function enviarRelatorioPlacar() {
   if (!whatsappConectado || !sock) return;
+  const total = totalGreens + totalLosses;
+  const taxa = total > 0 ? ((totalGreens / total) * 100).toFixed(1) : 100;
+  const lucro = (totalGreens * (ENTRADA_PADRAO_KZ * 0.4)) - (totalLosses * ENTRADA_PADRAO_KZ);
 
-  const totalGreens = totalGreensDirect + totalGreensGale1 + totalGreensRosa;
-  const totalJogos = totalGreens + totalLosses;
-  const taxaAssertividade = totalJogos > 0 ? ((totalGreens / totalJogos) * 100).toFixed(1) : "100.0";
-
-  const lucroEstimadoKz = (totalGreens * (ENTRADA_PADRAO_KZ * 0.8)) - (totalLosses * ENTRADA_PADRAO_KZ * 1.5);
-  const statusLucro = lucroEstimadoKz >= 0 
-    ? `💰 *Lucro Estimado:* +${lucroEstimadoKz.toLocaleString('pt-AO')} Kz` 
-    : `📉 *Drawdown:* ${lucroEstimadoKz.toLocaleString('pt-AO')} Kz`;
-
-  const textoPlacar = 
-`📊 *PLACAR ROBÔ GEMINI ULTRA HFT* 📊
----------------------------------------------
-🎯 **Direct Win:** ${totalGreensDirect} ✅
-🟢 **Win Cobertura (G1):** ${totalGreensGale1} 🟢
-🌸 **Velas Rosa (10x+):** ${totalGreensRosa} 🌸
-🛑 **Stop Loss:** ${totalLosses} ❌
----------------------------------------------
-📈 **Assertividade:** ${taxaAssertividade}%
-${statusLucro}
----------------------------------------------
-📲 *OPERAR AGORA NA MESA:*
-${obterLinkDinamico()}`;
-
-  enviarWhatsAppFila(destino, { text: textoPlacar });
+  const txt = `📊 *AUDITORIA REAL PROVABLY FAIR* 📊\n\n` +
+              `🟢 Acertos (Green): *${totalGreens}* ✅\n` +
+              `🔻 Erros (Loss): *${totalLosses}* ❌\n` +
+              `🎯 Assertividade: *${taxa}%*\n\n` +
+              `💰 Balanço Líquido: *${lucro >= 0 ? '+' : ''}${lucro.toFixed(0)} Kz*\n\n` +
+              `🚀 *Mesa Analisada:* ${obterLinkDinamento()}`;
+  await sock.sendMessage(config.grupoId, { text: txt }).catch(() => {});
 }
 
-function enviarGuiaGestao(destino) {
-  const texto = 
-`🛡️ *GUIA DE GESTÃO DE BANCA VIP* 🛡️
-
-1. **Gestão Fixo:** Entrar com 2% a 5% do capital por sinal.
-2. **Auto Cashout:** Manter proteção em 1.50x e busca de meta em 2.00x.
-3. **Disciplina:** Respeitar a pausa do robô após o acionamento do Stop Loss.
-
-📲 *Mesa Recomendada:* ${obterLinkDinamico()}`;
-
-  enviarWhatsAppFila(destino, { text: texto });
-}
-
-// ============================================================================
-// MONITORAMENTO PUPPETEER
-// ============================================================================
 async function iniciarMonitoramentoAviator() {
   if (monitoramentoIniciado) return;
   monitoramentoIniciado = true;
 
-  console.log("🌐 Conectando à mesa via Puppeteer...");
+  console.log("🌐 Iniciando navegador para o Analisador Real de Provably Fair...");
   try {
-    const launchOptions = {
-      headless: false,
-      defaultViewport: null,
-      args: [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-blink-features=AutomationControlled',
-        '--window-size=1366,768',
-        '--start-maximized'
-      ]
-    };
-
-    if (config.executablePath && fs.existsSync(config.executablePath)) {
-      launchOptions.executablePath = config.executablePath;
+    if (navegadorJogo) {
+      try { await navegadorJogo.close(); } catch(e) {}
+      navegadorJogo = null;
     }
 
-    navegadorJogo = await puppeteer.launch(launchOptions);
+   navegadorJogo = await puppeteer.launch({ 
+  headless: false, 
+  executablePath: 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+  args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-blink-features=AutomationControlled']
+});
+    
     paginaJogo = await navegadorJogo.newPage();
+    await paginaJogo.evaluateOnNewDocument(() => { 
+      Object.defineProperty(navigator, 'webdriver', { get: () => undefined }); 
+    }); 
 
-    await paginaJogo.setUserAgent(
-      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
-    );
-
-    await paginaJogo.goto(config.urlJogo, { waitUntil: 'networkidle2', timeout: 90000 });
-    console.log("🌐 Navegador pronto para captura de dados!");
+    await paginaJogo.goto(config.urlJogo, { waitUntil: 'domcontentloaded', timeout: 90000 });
+    executarLoopMonitoramento();
+    
   } catch (err) {
-    console.error("⚠️ Erro na inicialização do Puppeteer:", err.message);
+    console.log("❌ Erro ao abrir navegador:", err.message);
+    monitoramentoIniciado = false;
+    setTimeout(() => iniciarMonitoramentoAviator(), 15000);
   }
-
-  executarLoopMonitoramento();
 }
-
-// ============================================================================
-// LOOP PRINCIPAL (ENGINE HFT)
-// ============================================================================
-let isProcessing = false;
 
 function executarLoopMonitoramento() {
   let contadorErros = 0;
-
-  console.log("⚡ ENGINE SNIPER ULTRA PREDADOR INICIADO...");
+  console.log("⚙️ Analisador Real Provably Fair Operando em Tempo Real...");
 
   setInterval(async () => {
-    if (isProcessing) return;
-    isProcessing = true;
-
     try {
-      if (!paginaJogo) {
-        isProcessing = false;
-        return;
-      }
+      if (!paginaJogo) return;
 
-      let historico = null;
-      const todosOsFrames = paginaJogo.frames();
+      let dadosExtraidos = { velas: [], hashes: [] };
+      const todosFrames = paginaJogo.frames();
 
-      for (const frame of todosOsFrames) {
+      for (const frame of todosFrames) {
         try {
-          const dadosExtraidos = await frame.evaluate((seletor) => {
-            const elList = document.querySelectorAll(seletor || '*[class*="bubble"], *[class*="multiplier"]');
-            const arr = [];
-            elList.forEach(el => {
-              if (el.textContent) {
-                const txt = el.textContent.toLowerCase().replace('x', '').replace(',', '.').trim();
-                const n = parseFloat(txt);
-                if (!isNaN(n) && n >= 1.00 && n < 10000.00) {
-                  arr.push(n);
-                }
-              }
-            });
-            return arr;
-          }, config.classeVelas);
-
-          if (dadosExtraidos && dadosExtraidos.length > 0) {
-            historico = dadosExtraidos;
+          const resultado = await extrairDadosProvablyFairReal(frame);
+          if (resultado.velas && resultado.velas.length >= 3) {
+            dadosExtraidos = resultado;
             break;
           }
         } catch (e) {}
       }
 
-      if (historico && historico.length >= 5) {
+      if (dadosExtraidos.velas && dadosExtraidos.velas.length > 0) {
         contadorErros = 0;
-        const velaAtual = historico[0];
+        const velaAtual = dadosExtraidos.velas[0];
 
         if (ultimaVelaRegistrada === null || velaAtual !== ultimaVelaRegistrada) {
           ultimaVelaRegistrada = velaAtual;
 
-          if (rodadasBloqueadas > 0) rodadasBloqueadas--;
+          const analiseReal = analisarPadraoRealPF(dadosExtraidos);
 
-          console.log(`[VELA]: ${velaAtual}x | Analisando mesa...`);
+          console.clear();
+          console.log(`==========================================================================`);
+          console.log(`🔍 ANALISADOR REAL PROVABLY FAIR | VELA RECENTE: ${velaAtual}x`);
+          console.log(`==========================================================================`);
+          console.log(`📊 STATUS DO PADRÃO: ${analiseReal.sinal ? analiseReal.tipo : "AGUARDANDO GATILHO DE HASH"}`);
+          console.log(`🗄️ HISTÓRICO REAL: [${dadosExtraidos.velas.slice(0, 5).join("x | ")}x]`);
+          console.log(`==========================================================================`);
 
           if (whatsappConectado && sock) {
-
-            // 1. AVALIAÇÃO DO RESULTADO DA OPERAÇÃO ATIVA
             if (sinalAtivo) {
               tentativaAtual++;
               let finalizado = false;
-              let msg = "";
+              let mensagemMsg = "";
 
-              const totalGreens = totalGreensDirect + totalGreensGale1 + totalGreensRosa;
-              const placar = `📊 **Placar:** ${totalGreens} ✅ x ${totalLosses} ❌`;
-
-              if (tipoSinal === "ROSA" && velaAtual >= 10.00) {
-                totalGreensRosa++;
-                finalizado = true;
-                msg = 
-`🌸 ═════════════════════ 🌸
-🎯 *CASH OUT ROSA BINGO! (${velaAtual}x)*
-🌸 ═════════════════════ 🌸
-
-🚀 **Vela Paga:** ${velaAtual}x
-💰 **Resultado:** MULTIPLICAÇÃO MÁXIMA
-${placar}
-
-📲 **Mesa:** ${obterLinkDinamico()}`;
-              }
-              else if (velaAtual >= multiplicadorAlvo) {
-                if (tentativaAtual === 1) totalGreensDirect++;
-                else totalGreensGale1++;
-                finalizado = true;
-
-                msg = 
-`🎯 ═════════════════════ 🎯
-🏆 *TARGET ATINGIDO! (${multiplicadorAlvo}x)*
-🎯 ═════════════════════ 🎯
-
-🚀 **Vela Paga:** ${velaAtual}x
-💰 **Resultado:** ${tentativaAtual === 1 ? 'Direct Win 🎯' : 'Win Cobertura G1 🟢'}
-${placar}
-
-📲 **Mesa:** ${obterLinkDinamico()}`;
+              if (velaAtual >= multiplicadorAlvo) {
+                totalGreens++; finalizado = true;
+                mensagemMsg = `✅ *GREEN! AUDITORIA REAL CONFIRMADA (${velaAtual}x)* ✅\n\nAlvo real atingido em *${multiplicadorAlvo}x*. Placar: ${totalGreens}G / ${totalLosses}L 💸`;
               } 
-              else if (velaAtual >= multiplicadorProtecao) {
-                if (tentativaAtual === 1) totalGreensDirect++;
-                else totalGreensGale1++;
-                finalizado = true;
-
-                msg = 
-`🛡️ ═════════════════════ 🛡️
-🟢 *PROTEÇÃO CONCLUÍDA (${multiplicadorProtecao}x)*
-🛡️ ═════════════════════ 🛡️
-
-🚀 **Vela Paga:** ${velaAtual}x
-💰 **Resultado:** Banca Protegida sem Prejuízo
-${placar}
-
-📲 **Mesa:** ${obterLinkDinamico()}`;
-              } 
-              else if (tentativaAtual < 2) {
-                msg = 
-`⚠️ ═════════════════════ ⚠️
-🔄 *GALE 1 DE RECUPERAÇÃO*
-⚠️ ═════════════════════ ⚠️
-
-📉 **Vela Anterior:** ${velaAtual}x
-📥 **Ação:** Entrar mantendo Auto Cashout configurado!`;
+              else if (tentativaAtual === 1) {
+                mensagemMsg = `⚠️ *⚠️ Variação na Entropia Real (${velaAtual}x)*\n\nExecutando *GALE 1 (Proteção de Hash)* agora! 🚀`;
               } 
               else {
-                totalLosses++;
-                finalizado = true;
-                rodadasBloqueadas = 4;
-
-                msg = 
-`🛑 ═════════════════════ 🛑
-❌ *STOP LOSS EXECUTADO*
-🛑 ═════════════════════ 🛑
-
-📉 **Vela:** ${velaAtual}x
-🛡️ **Pausa de Segurança:** Robô pausado por 4 rodadas.
-${placar}`;
+                totalLosses++; finalizado = true;
+                mensagemMsg = `🔻 *STOP DE PROTEÇÃO REAL* 🔻\n\nQuebra estrutural no Provably Fair em ${velaAtual}x. Pausa para preservar o capital. Placar: ${totalGreens}G / ${totalLosses}L`;
               }
 
-              enviarWhatsAppFila(config.grupoId, { text: msg });
-
-              if (finalizado) {
-                sinalAtivo = null;
+              await sock.sendMessage(config.grupoId, { text: mensagemMsg }).catch(() => {});
+              if (finalizado) { sinalAtivo = null; tentativaAtual = 0; }
+            } 
+            else {
+              if (analiseReal.sinal) {
+                sinalAtivo = analiseReal.tipo;
+                multiplicadorAlvo = analiseReal.alvo;
                 tentativaAtual = 0;
-              }
-            }
 
-            // 2. DETECÇÃO E DISPARO DE NOVO SINAL
-            else if (rodadasBloqueadas === 0) {
-              const analiseZona = validarZonaDeAposta(historico);
-
-              if (analiseZona.valida) {
-                const analise = await analisarComGeminiPro(historico, analiseZona.modo);
-
-                if (analise.recomendacao === "ENTRAR" && analise.confianca >= 75) {
-                  sinalAtivo = "ULTRA_SNIPER";
-                  tipoSinal = analiseZona.modo;
-                  multiplicadorAlvo = analiseZona.modo === "ROSA" ? 10.00 : (analise.alvo || 2.00);
-                  multiplicadorProtecao = analise.protecao || 1.50;
-                  tentativaAtual = 0;
-
-                  const iconeHeader = tipoSinal === "ROSA" ? "🌸" : "⚡";
-                  const tituloSinal = tipoSinal === "ROSA" ? "ALERTA VELA ROSA (10X+)" : "SINAL SNIPER CONFIRMADO";
-
-                  const textoSinal = 
-`${iconeHeader} ═════════════════════ ${iconeHeader}
-🚨 *${tituloSinal}* 🚨
-${iconeHeader} ═════════════════════ ${iconeHeader}
-
-📌 **Entrar Após:** ${velaAtual}x
-🛡️ **Auto Cashout Proteção:** ${multiplicadorProtecao}x
-🚀 **Target Principal:** ${multiplicadorAlvo}x
-🔄 **Gale:** Máximo 1 Cobertura
-
-🤖 **Validação Gemini AI:**
-• Assertividade: *${analise.confianca}%*
-• Padrão: *${analise.padrao_detectado || 'Quebra de Ciclo'}*
-• Diagnóstico: *${analise.motivo}*
-
-📲 **OPERAR NA MESA AGORA:**
-${obterLinkDinamico()}`;
-
-                  enviarWhatsAppFila(config.grupoId, { text: textoSinal });
-                }
+                await sock.sendMessage(config.grupoId, {
+                  text: `🎲 *SINAL REAL PROVABLY FAIR* 🔍\n\n` +
+                        `📋 ${analiseReal.descricao}\n` +
+                        `🎯 Alvo Real de Saída: *${multiplicadorAlvo}x*\n` +
+                        `📥 *ENTRAR NA PRÓXIMA (Máx 1 Gale)*\n` +
+                        `🔗 ${obterLinkDinamento()}`
+                }).catch(() => {});
               }
             }
           }
         }
       } else {
         contadorErros++;
-        if (contadorErros > 150) {
-          contadorErros = 0;
-          await paginaJogo.reload({ waitUntil: 'domcontentloaded' }).catch(() => {});
+        if (contadorErros % 5 === 0) {
+          console.log("⏳ Aguardando leitura dos elementos reais da plataforma...");
         }
       }
-    } catch (err) {
-      console.error("[ERRO ENGINE]:", err.message);
-    } finally {
-      isProcessing = false;
-    }
-  }, 400);
+    } catch (e) {}
+  }, 1000);
 }
 
-// ============================================================================
-// INICIALIZAÇÃO DO SERVIDOR
-// ============================================================================
+io.on("connection", (socket) => {
+  socket.emit("status", {
+    conectado: whatsappConectado,
+    mensagem: whatsappConectado ? "WhatsApp conectado com sucesso!" : "Escaneie o QR Code no navegador",
+  });
+  if (!whatsappConectado) {
+    socket.emit("qr", "loading");
+  }
+});
+
 server.listen(PORT, () => {
   console.log(`🚀 Servidor HTTP ativo em http://localhost:${PORT}`);
   initWhatsApp();
