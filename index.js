@@ -318,11 +318,17 @@ async function iniciarMonitoramentoAviator() {
       navegadorJogo = null;
     }
 
-   navegadorJogo = await puppeteer.launch({ 
-  headless: false, 
-  executablePath: 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
-  args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-blink-features=AutomationControlled']
-});
+    // Inicialização otimizada sem caminho estático para evitar falhas de diretório no Windows
+    navegadorJogo = await puppeteer.launch({ 
+      headless: false, 
+      args: [
+        '--no-sandbox', 
+        '--disable-setuid-sandbox', 
+        '--disable-blink-features=AutomationControlled',
+        '--disable-web-security',
+        '--disable-features=IsolateOrigins,site-per-process'
+      ]
+    });
     
     paginaJogo = await navegadorJogo.newPage();
     await paginaJogo.evaluateOnNewDocument(() => { 
