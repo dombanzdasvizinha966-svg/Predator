@@ -318,9 +318,19 @@ async function iniciarMonitoramentoAviator() {
       navegadorJogo = null;
     }
 
-    // Inicialização otimizada sem caminho estático para evitar falhas de diretório no Windows
+    // Força o caminho real do Chrome instalado no Windows
+    const caminhoChrome64 = 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
+    const caminhoChrome32 = 'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe';
+    const fs = require('fs');
+    
+    let execPath = caminhoChrome64;
+    if (!fs.existsSync(caminhoChrome64) && fs.existsSync(caminhoChrome32)) {
+      execPath = caminhoChrome32;
+    }
+
     navegadorJogo = await puppeteer.launch({ 
       headless: false, 
+      executablePath: fs.existsSync(execPath) ? execPath : undefined,
       args: [
         '--no-sandbox', 
         '--disable-setuid-sandbox', 
